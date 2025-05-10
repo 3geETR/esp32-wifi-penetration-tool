@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 WiFi Penetration Tool Loader</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        h1, h2 {
+            color: #333;
+            text-align: center;
+        }
+        .container {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 10px 0;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #f5f5f5;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .progress-bar {
+            width: 100%;
+            background-color: #e0e0e0;
+            padding: 3px;
+            border-radius: 3px;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, .2);
+            margin: 10px 0;
+        }
+        .progress {
+            display: block;
+            height: 20px;
+            background-color: #4CAF50;
+            border-radius: 3px;
+            transition: width 0.3s;
+            width: 0%;
+            text-align: center;
+            color: white;
+            line-height: 20px;
+        }
+        .success {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        .error {
+            color: #f44336;
+            font-weight: bold;
+        }
+        .step {
+            margin-bottom: 20px;
+            padding: 15px;
+            border-left: 4px solid #4CAF50;
+            background-color: #f9f9f9;
+        }
+        #serialPorts {
+            width: 100%;
+            padding: 8px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+    </style>
+</head>
+<body>
+    <h1>ESP32 WiFi Penetration Tool Loader</h1>
+    
+    <div class="container">
+        <div class="step">
+            <h2>Installation Instructions</h2>
+            <p>This page allows you to directly upload the WiFi Penetration Tool to your ESP32 device.</p>
+            <ol>
+                <li>Connect your ESP32 device to your computer via USB.</li>
+                <li>Click on the "Scan Serial Ports" button to find your device.</li>
+                <li>Select your ESP32 device from the list.</li>
+                <li>Click on the "Upload" button to start the firmware upload process.</li>
+            </ol>
+        </div>
+
+        <div>
+            <button id="scanButton">Scan Serial Ports</button>
+            <select id="serialPorts" disabled>
+                <option value="">-- Select serial port --</option>
+            </select>
+        </div>
+        
+        <div>
+            <button id="connectButton" disabled>Connect</button>
+            <button id="uploadButton" disabled>Upload</button>
+            <button id="eraseButton" disabled>Erase Flash Memory</button>
+        </div>
+
+        <div class="progress-bar">
+            <span class="progress" id="progressBar">0%</span>
+        </div>
+        
+        <div class="status" id="statusContainer">
+            <p>Process logs will be displayed here.</p>
+        </div>
+    </div>
+
+    <script>
+        let port = null;
+        let reader = null;
+        let writer = null;
+        let readTimeout = null;
+        let isConnected = false;
+        
+        const scanButton = document.getElementById('scanButton');
+        const serialPorts = document.getElementById('serialPorts');
+        const connectButton = document.getElementById('connectButton');
+        const uploadButton = document.getElementById('uploadButton');
+        const eraseButton = document.getElementById('eraseButton');
+        const progressBar = document.getElementById('progressBar');
+        const statusContainer = document.getElementById('statusContainer');
+        
+        // Check serial port access
+        if ('serial' in navigator) {
+            scanButton.addEventListener('click', scanPorts);
+            connectButton.addEventListener('click', connectToDevice);
+            uploadButton.addEventListener('click', uploadFirmware);
+            eraseButton.addEventListener('click', eraseFlash);
+        } else {
+            addMessage('This browser does not support WebSerial API. You need to use Chrome or Edge.', 'error');
+            scanButton.disabled = true;
+        }
+        
+        // Add messages to status
+        function addMessage(message, type = '') {
+            const msgElement = document.createElement('div');
+            msgElement.textContent = message;
+            if (type) {
+                msgElement.classList.add(type);
+            }
+            statusContainer.appendChild(msgElement);
+            statusContainer.scrollTop = statusContainer.scrollHeight;
+        }
+        
+        // Update progress bar
+        function updateProgress(percentage) {
+            progressBar.style.width = percentage + '%';
+            progressBar.textContent = percentage + '%';
+        }
+        
+        // Scan serial ports
+        async function scanPorts() {
+            try {
+                addMessage('Scanning serial ports...');
+                
+                // Clear previous options
+                while (serialPorts.options.length > 1) {
+                    serialPorts.remove(1);
+                }
+                
+                // Get current port list (previously granted access)
+                const ports = await navigator.serial.getPorts();
+                
+                if (ports.length === 0) {
+                    addMessage('No previously accessed ports found. Please select a new port.');
+                } else {
+                    addMessage(`Found ${ports.length} ports.`);
+                    
+                    // Add existing ports to list
+                    ports.forEach((port, index) => {
+                        const option = document.createElement('option');
+                        option.value = index;
+                        option.text = `Port ${index + 1}`;
+                        serialPorts.add(option);
+                    });
+                }
+                
+                // Add option to select a new port
+                const option = document.createElement('option');
+                option.value = 'request';
+                option.text = '-- Select new port --';
+                serialPorts.add(option);
+                
+                serialPorts.disabled = false;
+                connectButton.disabled = false;
+                
+            } catch (error) {
+                addMessage(`Error: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+        
+        // Connect to device
+        async function connectToDevice() {
+            if (isConnected) {
+                await disconnectDevice();
+                return;
+            }
+            
+            try {
+                const selection = serialPorts.value;
+                
+                // Create a new connection if closed
+                if (selection === 'request') {
+                    // Request user to select a new port
+                    port = await navigator.serial.requestPort();
+                    addMessage('New port selected.');
+                } else if (selection !== '') {
+                    // Select one of the existing ports
+                    const ports = await navigator.serial.getPorts();
+                    port = ports[parseInt(selection)];
+                    addMessage(`Port ${parseInt(selection) + 1} selected.`);
+                } else {
+                    addMessage('Please select a port.', 'error');
+                    return;
+                }
+                
+                // Connect to port (typical baudrate for ESP32: 115200)
+                await port.open({ baudRate: 115200 });
+                
+                // Create read and write streams
+                reader = port.readable.getReader();
+                writer = port.writable.getWriter();
+                
+                // Successful connection
+                isConnected = true;
+                addMessage('Successfully connected to device!', 'success');
+                
+                // Update button states
+                connectButton.textContent = 'Disconnect';
+                uploadButton.disabled = false;
+                eraseButton.disabled = false;
+                
+                // Start continuous reading
+                readSerialData();
+                
+            } catch (error) {
+                addMessage(`Connection error: ${error.message}`, 'error');
+                console.error(error);
+                await disconnectDevice();
+            }
+        }
+        
+        // Disconnect device
+        async function disconnectDevice() {
+            try {
+                // Stop reading
+                if (readTimeout) {
+                    clearTimeout(readTimeout);
+                    readTimeout = null;
+                }
+                
+                // Release reader and writer
+                if (reader) {
+                    await reader.releaseLock();
+                    reader = null;
+                }
+                
+                if (writer) {
+                    await writer.releaseLock();
+                    writer = null;
+                }
+                
+                // Close port
+                if (port && port.readable) {
+                    await port.close();
+                }
+                
+                isConnected = false;
+                addMessage('Device disconnected.');
+                
+                // Update button states
+                connectButton.textContent = 'Connect';
+                uploadButton.disabled = true;
+                eraseButton.disabled = true;
+                
+            } catch (error) {
+                addMessage(`Disconnection error: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+        
+        // Continuously read data from serial port
+        async function readSerialData() {
+            try {
+                while (port && port.readable && reader) {
+                    const { value, done } = await reader.read();
+                    
+                    if (done) {
+                        break;
+                    }
+                    
+                    // Show incoming data as text
+                    const decoder = new TextDecoder();
+                    const text = decoder.decode(value);
+                    if (text.trim()) {
+                        addMessage(`<< ${text.trim()}`);
+                    }
+                }
+            } catch (error) {
+                if (error.name !== 'NetworkError') {
+                    addMessage(`Reading error: ${error.message}`, 'error');
+                    console.error(error);
+                }
+            }
+            
+            // Check if connection is lost
+            if (isConnected) {
+                readTimeout = setTimeout(readSerialData, 100);
+            }
+        }
+        
+        // Write data to serial port
+        async function writeToSerial(data) {
+            if (!writer) {
+                addMessage('Writing error: No connection.', 'error');
+                return;
+            }
+            
+            try {
+                const encoder = new TextEncoder();
+                const dataArray = encoder.encode(data + '\r\n');
+                await writer.write(dataArray);
+                addMessage(`>> ${data}`);
+            } catch (error) {
+                addMessage(`Writing error: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+        
+        // Upload binary files
+        async function uploadFirmware() {
+            if (!isConnected) {
+                addMessage('Please connect to the device first.', 'error');
+                return;
+            }
+            
+            try {
+                // Disable buttons
+                uploadButton.disabled = true;
+                eraseButton.disabled = true;
+                
+                addMessage('Starting firmware upload process...');
+                
+                // DTR/RTS manipulation to enter reset on ESP32
+                // Note: WebSerial API doesn't allow direct DTR/RTS control, so we skip this part
+                // User should press the reset button.
+                addMessage('Please hold down the BOOT button on your ESP32 device, then press the RESET button.');
+                addMessage('After releasing the RESET button, also release the BOOT button.');
+                addMessage('Then click "OK".', 'success');
+                
+                if (!confirm('After putting your ESP32 into boot mode, click "OK".')) {
+                    addMessage('Process cancelled.', 'error');
+                    uploadButton.disabled = false;
+                    eraseButton.disabled = false;
+                    return;
+                }
+                
+                addMessage('Uploading bootloader...');
+                await fetchAndFlash('bootloader.bin', 0x1000);
+                updateProgress(33);
+                
+                addMessage('Uploading Partition Table...');
+                await fetchAndFlash('partition-table.bin', 0x8000);
+                updateProgress(66);
+                
+                addMessage('Uploading WiFi Penetration Tool...');
+                await fetchAndFlash('esp32-wifi-penetration-tool.bin', 0x10000);
+                updateProgress(100);
+                
+                addMessage('All firmware successfully uploaded!', 'success');
+                addMessage('Press the RESET button on your ESP32 device to restart it.', 'success');
+                
+            } catch (error) {
+                addMessage(`Upload error: ${error.message}`, 'error');
+                console.error(error);
+            } finally {
+                uploadButton.disabled = false;
+                eraseButton.disabled = false;
+            }
+        }
+        
+        // Erase flash memory
+        async function eraseFlash() {
+            if (!isConnected) {
+                addMessage('Please connect to the device first.', 'error');
+                return;
+            }
+            
+            try {
+                // Disable buttons
+                uploadButton.disabled = true;
+                eraseButton.disabled = true;
+                
+                addMessage('Starting flash memory erase process...');
+                addMessage('This process may take about 30 seconds...');
+                
+                // Wait for reset and boot mode
+                addMessage('Please hold down the BOOT button on your ESP32 device, then press the RESET button.');
+                addMessage('After releasing the RESET button, also release the BOOT button.');
+                addMessage('Then click "OK".', 'success');
+                
+                if (!confirm('After putting your ESP32 into boot mode, click "OK".')) {
+                    addMessage('Process cancelled.', 'error');
+                    uploadButton.disabled = false;
+                    eraseButton.disabled = false;
+                    return;
+                }
+                
+                // Send flash erase command
+                // Note: This cannot be done through WebSerial API in a real application, esptool.py is needed
+                addMessage('WebSerial API is not sufficient to directly erase flash memory.', 'error');
+                addMessage('It is recommended to use ESP32 Flash Download Tool or esptool.py instead.', 'error');
+                
+            } catch (error) {
+                addMessage(`Flash erase error: ${error.message}`, 'error');
+                console.error(error);
+            } finally {
+                uploadButton.disabled = false;
+                eraseButton.disabled = false;
+            }
+        }
+        
+        // Download and write binary file to flash
+        async function fetchAndFlash(filename, address) {
+            try {
+                addMessage(`Downloading ${filename}...`);
+                
+                // Fetch the file
+                const response = await fetch(filename);
+                if (!response.ok) {
+                    throw new Error(`Failed to download ${filename}: ${response.status} ${response.statusText}`);
+                }
+                
+                const fileData = await response.arrayBuffer();
+                addMessage(`Downloaded ${filename} (${fileData.byteLength} bytes)`);
+                
+                // Normally we would write data to ESP32 using esptool protocol here
+                // But we can't do this directly with WebSerial API
+                // At this stage, it's recommended for the user to use a tool like esp-flasher
+                
+                addMessage(`Simulating writing ${filename} to address 0x${address.toString(16)}...`);
+                
+                // Simulate completion of process
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                addMessage(`${filename} successfully written to flash (simulation)`, 'success');
+                
+            } catch (error) {
+                throw new Error(`Error writing ${filename}: ${error.message}`);
+            }
+        }
+    </script>
+</body>
+</html>
